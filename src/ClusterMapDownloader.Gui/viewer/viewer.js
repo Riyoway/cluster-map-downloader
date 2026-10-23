@@ -5,6 +5,7 @@
 // Model data stays on disk; three.js itself is imported from a CDN below.
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 const infoBox = document.getElementById('info');
 const overlay = document.getElementById('overlay');
@@ -47,9 +48,18 @@ const renderer = new THREE.WebGLRenderer({ antialias: true });
 document.body.appendChild(renderer.domElement);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
+// ACES tone mapping tames the blown-out whites of the ripped albedo-only
+// materials (no baked shading is carried over, so surfaces are otherwise flat).
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x14161a);
+// Image-based ambient light from a neutral room probe. The rip carries no
+// lightmaps/baked GI, so without some ambient irradiance every surface reads
+// equally flat; this gives shape back to the geometry without inventing colour.
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
 
 const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.05, 8000);
 camera.rotation.order = 'YXZ';
@@ -234,6 +244,18 @@ async function loadModel() {
         // with front-face culling they render inside-out / black. DoubleSide
         // is the pragmatic generic-model-data fix.
         material.side = THREE.DoubleSide;
+        // AssetRipper's generic export leaves materials at glTF's default
+        // metallicFactor of 1 (pure metal) with no metallicRoughness texture.
+        // A pure metal reflects only an environment map, and this viewer has
+        // none, so such materials render black and their base-color textures
+        // never show. The GLB normally gets this corrected by the convert
+        // pipeline's tidy pass, but that pass is skipped when the .NET SDK is
+        // absent at conversion time - so neutralize it here too, matching
+        // Unity's dielectric default, whether or not the GLB was tidied.
+        if (material.isMeshStandardMaterial && !material.metalnessMap && material.metalness > 0) {
+          material.metalness = 0;
+          material.needsUpdate = true;
+        }
         for (const slot of mapSlots) {
           const texture = material[slot];
           // Degraded texture slots would render as black holes; drop them so
